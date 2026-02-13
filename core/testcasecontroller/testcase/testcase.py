@@ -118,5 +118,8 @@ class TestCase:
                     continue
                 metric_res[metric_name] = metric_func(test_dataset.y, paradigm_result)
         if paradigm_result is None:
-            metric_res["accuracy"] = metric_res["task_avg_acc"]
+            # For lifelong learning, use task_avg_acc if available
+            if "task_avg_acc" in metric_res:
+                metric_res["accuracy"] = metric_res["task_avg_acc"]
         return metric_res
+

@@ -21,7 +21,7 @@ class TaskAllocationByOrigin:
     def __init__(self, **kwargs):
         self.default_origin = kwargs.get("default", None)
 
-    def __call__(self, task_extractor, samples: BaseDataSource):
+    def __call__(self, samples: BaseDataSource, task_extractor=None):
         #self.task_extractor = task_extractor
         self.task_extractor = {"front": 0, "garden": 1}
         if self.default_origin:
@@ -47,3 +47,9 @@ class TaskAllocationByOrigin:
                        for sample_origin in sample_origins]
 
         return samples, allocations
+
+    def get(self, key, default=None):
+        """Provide dict-like interface for Sedna compatibility"""
+        if key == 'method':
+            return "TaskAllocationByOrigin"
+        return default

@@ -16,6 +16,7 @@
 # pylint: disable=C0412
 import os
 import shutil
+import tempfile
 import numpy as np
 from sedna.datasources import BaseDataSource
 from core.common.log import LOGGER
@@ -23,6 +24,7 @@ from core.common.constant import ParadigmType, SystemMetricType
 from core.testcasecontroller.algorithm.paradigm.base import ParadigmBase
 from core.testcasecontroller.metrics import get_metric_func
 from core.common.utils import get_file_format, is_local_dir
+import sedna.algorithms.seen_task_learning.task_update_decision.task_update_decision_finetune
 
 
 
@@ -61,8 +63,9 @@ class LifelongLearning(ParadigmBase):
         self.initial_model = kwargs.get("initial_model_url")
         self.incremental_rounds = kwargs.get("incremental_rounds", 1)
         self.model_eval_config = kwargs.get("model_eval")
-        self.cloud_task_index = '/tmp/cloud_task/index.pkl'
-        self.edge_task_index = '/tmp/edge_task/index.pkl'
+        tmp_dir = tempfile.gettempdir()
+        self.cloud_task_index = os.path.join(tmp_dir, 'cloud_task', 'index.pkl')
+        self.edge_task_index = os.path.join(tmp_dir, 'edge_task', 'index.pkl')
         self.system_metric_info = {SystemMetricType.SAMPLES_TRANSFER_RATIO.value: [],
                                    SystemMetricType.MATRIX.value : {},
                                    SystemMetricType.TASK_AVG_ACC.value: {}}
@@ -126,7 +129,7 @@ class LifelongLearning(ParadigmBase):
                         score_list = tmp_dict.get(entry, ['' for i in range(rounds)])
                         score_list[j-1] = scores
                         tmp_dict[entry] = score_list
-                    task_avg_score['accuracy'] = task_avg_score['accuracy']/i
+                    task_avg_score['accuracy'] = task_avg_score['accuracy']/i if i > 0 else 0.0
                     score_list = tmp_dict.get("task_avg", [{'accuracy':0.0} for i in range(rounds)])
                     score_list[j-1] = task_avg_score
                     tmp_dict["task_avg"] = score_list
@@ -148,7 +151,7 @@ class LifelongLearning(ParadigmBase):
                 entry = detail.entry
                 LOGGER.info(f"{entry} scores: {scores}")
                 task_avg_score['accuracy'] += scores['accuracy']
-            task_avg_score['accuracy'] = task_avg_score['accuracy']/i
+            task_avg_score['accuracy'] = task_avg_score['accuracy']/i if i > 0 else 0.0
             self.system_metric_info[SystemMetricType.TASK_AVG_ACC.value] = task_avg_score
             LOGGER.info(task_avg_score)
             # job = self.build_paradigm_job(ParadigmType.LIFELONG_LEARNING.value)
@@ -353,23 +356,29 @@ class LifelongLearning(ParadigmBase):
         train_output_dir = os.path.join(self.workspace, f"output/train/{rounds}")
         if not is_local_dir(train_output_dir):
             os.makedirs(train_output_dir)
+        
+        # CRITICAL FIX: Set OUTPUT_URL for ALL rounds, not just round < 1
+        # Sedna uses OUTPUT_URL to determine where to save index.pkl
+        os.environ["OUTPUT_URL"] = train_output_dir
+        
         if rounds < 1:
             os.environ["CLOUD_KB_INDEX"] = cloud_task_index
-            os.environ["OUTPUT_URL"] = train_output_dir
-        if rounds < 1:
             os.environ["HAS_COMPLETED_INITIAL_TRAINING"] = 'False'
         else:
+            # For rounds >= 1, also set CLOUD_KB_INDEX to the previous index path
+            os.environ["CLOUD_KB_INDEX"] = cloud_task_index
             os.environ["HAS_COMPLETED_INITIAL_TRAINING"] = 'True'
+
 
         if isinstance(train_dataset, str):
             train_dataset = self.dataset.load_data(train_dataset, "train",
                                                    feature_process=_data_feature_process)
 
         job = self.build_paradigm_job(ParadigmType.LIFELONG_LEARNING.value)
-        cloud_task_index = job.train(train_dataset)
+        _ = job.train(train_dataset)
         del job
 
-        return cloud_task_index
+        return os.path.join(train_output_dir, "index.pkl")
 
     def _eval(self, cloud_task_index, data_index_file, rounds):
         eval_output_dir = os.path.join(self.workspace, f"output/eval/{rounds}")
@@ -416,7 +425,28 @@ class LifelongLearning(ParadigmBase):
 
         job = self.build_paradigm_job(ParadigmType.LIFELONG_LEARNING.value)
         _, metric_func = get_metric_func(model_metric)
-        edge_task_index, tasks_detail, res = job.my_evaluate(eval_dataset, metrics=metric_func)
+        # Custom evaluation logic to replace missing my_evaluate method
+        res, tasks_detail = \
+            job.cloud_knowledge_management.seen_estimator.evaluate(
+                data=eval_dataset,
+                task_index=cloud_task_index,
+                metrics=metric_func)
+
+        # Evaluate tasks to decide which ones to drop/update
+        drop_task = job.cloud_knowledge_management.evaluate_tasks(
+            tasks_detail,
+            task_index=cloud_task_index,
+            metrics=metric_func)
+
+        # Update task status in knowledge base
+        edge_task_index = job.kb_server.update_task_status(drop_task, new_status=0)
+
+        if not edge_task_index:
+            LOGGER.error(f"KB update Fail !")
+            edge_task_index = str(
+                job.cloud_knowledge_management.local_task_index_url)
+        else:
+            LOGGER.info(f"Deploy {edge_task_index} to the edge.")
 
         del job
 

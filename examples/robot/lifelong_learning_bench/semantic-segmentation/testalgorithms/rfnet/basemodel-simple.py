@@ -1,4 +1,5 @@
 import os
+import sys
 import gc
 import numpy as np
 import torch
@@ -9,6 +10,11 @@ from sedna.common.file_ops import FileOps
 from sedna.common.log import LOGGER
 from PIL import Image
 from torchvision import transforms
+
+# Add RFNet to sys.path for multiprocessing workers
+rfnet_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'RFNet')
+if rfnet_path not in sys.path:
+    sys.path.insert(0, rfnet_path)
 
 from RFNet.train import Trainer
 from RFNet.eval import Validator, load_my_state_dict

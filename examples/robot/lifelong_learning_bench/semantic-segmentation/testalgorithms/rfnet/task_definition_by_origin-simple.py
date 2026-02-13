@@ -21,6 +21,13 @@ class TaskDefinitionByOrigin:
     def __init__(self, **kwargs):
         self.origins = kwargs.get("origins", ["front", "garden"])
 
+    def get(self, key, default=None):
+        """Provide dict-like interface for Sedna compatibility"""
+        if key == 'method':
+            return "TaskDefinitionByOrigin"
+        return default
+
+
     def __call__(self,
                  samples: BaseDataSource, **kwargs) -> Tuple[List[Task],
                                                              Any,

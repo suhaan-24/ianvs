@@ -46,9 +46,7 @@ class BaseModel:
             train_loss = self.trainer.my_training(epoch)
             #train_loss = self.trainer.training(epoch)
             loss_all.append(train_loss)
-        with open('/home/shijing.hu/ianvs/project/ianvs/train_loss_2.txt', 'a+') as file:
-            np.savetxt(file, loss_all)
-        file.close
+        # Note: Loss logging removed - was using hardcoded path
 
     def train(self, train_data, valid_data=None, **kwargs):
         self.trainer = Trainer(self.train_args, train_data=train_data)
@@ -83,9 +81,7 @@ class BaseModel:
                 }, is_best)
 
         self.trainer.writer.close()
-        with open('/home/shijing.hu/ianvs/project/ianvs/train_loss.txt', 'a+') as file:
-            np.savetxt(file, loss_all)
-        file.close
+        # Note: Loss logging removed - was using hardcoded path
         return self.train_model_url
 
     def predict(self, data, **kwargs):
