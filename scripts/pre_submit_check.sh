@@ -7,7 +7,10 @@ echo "🔍 Running pre-submission validation..."
 
 # 1. Check Python version
 echo "✓ Checking Python version..."
-python3 --version | grep -E "3\.[7-9]|3\.10" || {
+PY_VERSION=$(python3 --version 2>&1)
+echo "Found: $PY_VERSION"
+# Match 3.7-3.9 OR 3.10-3.99
+echo "$PY_VERSION" | grep -E "3\.([7-9]|[1-9][0-9])" || {
     echo "❌ Python 3.7+ required"
     exit 1
 }
@@ -19,8 +22,10 @@ pip install -q -e .  # Install ianvs in editable mode so imports work
 
 # 3. Run linting (if pylint is installed)
 if command -v pylint &> /dev/null; then
-    echo "✓ Running linting..."
-    pylint core/ examples/ || echo "⚠️  Linting warnings found (non-blocking)"
+    echo "✓ Running linting (Focused on your changes)..."
+    # Lint core and ONLY the lifelong learning example
+    TARGET_EXAMPLE="examples/robot/lifelong_learning_bench/semantic-segmentation"
+    pylint core/ "$TARGET_EXAMPLE" || echo "⚠️  Linting warnings found (non-blocking)"
 else
     echo "⚠️  Pylint not installed, skipping linting"
 fi
