@@ -15,6 +15,7 @@ python3 --version | grep -E "3\.[7-9]|3\.10" || {
 # 2. Install dependencies
 echo "✓ Installing dependencies..."
 pip install -q -r requirements.txt
+pip install -q -e .  # Install ianvs in editable mode so imports work
 
 # 3. Run linting (if pylint is installed)
 if command -v pylint &> /dev/null; then
@@ -26,6 +27,11 @@ fi
 
 # 4. Run quick smoke test
 echo "✓ Running smoke test..."
-python3 -c "import ianvs; print('Ianvs imported successfully')"
+python3 -c "import core; print('Ianvs core imported successfully')" || {
+    echo "❌ Failed to import core module"
+    exit 1
+}
+ianvs --help > /dev/null && echo "✓ Ianvs CLI working" || echo "⚠️  Ianvs CLI not found/working"
+
 
 echo "✅ Pre-submission checks passed!"
