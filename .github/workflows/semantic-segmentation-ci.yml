@@ -1,0 +1,79 @@
+---
+name: Semantic Segmentation CI-CD
+
+"on":
+  push:
+    branches: ["master", "main"]
+    paths:
+      - 'examples/robot/lifelong_learning_bench/semantic-segmentation/**'
+      - '.github/workflows/semantic-segmentation-ci.yml'
+  pull_request:
+    branches: ["master", "main"]
+    paths:
+      - 'examples/robot/lifelong_learning_bench/semantic-segmentation/**'
+      - '.github/workflows/semantic-segmentation-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Linting Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 yamllint
+
+      - name: Strict Yamllint
+        run: |
+          yamllint -d '{"extends": "relaxed", "rules": {"line-length": "disable", "document-start": "disable", "new-lines": "disable", "new-line-at-end-of-file": "disable", "empty-lines": "disable"}}' \
+            examples/robot/lifelong_learning_bench/semantic-segmentation/
+
+      - name: Strict Flake8
+        run: |
+          flake8 examples/robot/lifelong_learning_bench/semantic-segmentation/ \
+            --count --show-source --statistics \
+            --extend-ignore=E501,E402,F821,F401,F403,F405,E722,E203,E262,E265,E266,E731,E741,F811,F841,W291
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.7", "3.8", "3.9", "3.10"]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install libgl1-mesa-glx -y
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ./examples/resources/third_party/*
+          pip install -r requirements.txt
+          python setup.py install
+
+      - name: Create Mock Dataset
+        run: |
+          mkdir -p examples/robot/lifelong_learning_bench/semantic-segmentation/data
+          echo "mock-data" > examples/robot/lifelong_learning_bench/semantic-segmentation/data/train-index.txt
+          echo "mock-data" > examples/robot/lifelong_learning_bench/semantic-segmentation/data/test-index.txt
+
+      - name: Run Semantic Segmentation Benchmark
+        run: |
+          ianvs -f examples/robot/lifelong_learning_bench/semantic-segmentation/benchmarkingjob-simple.yaml
+
