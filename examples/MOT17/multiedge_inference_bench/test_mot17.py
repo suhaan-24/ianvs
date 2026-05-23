@@ -341,19 +341,19 @@ class MOT17TestRunner:
                 f"NaN will corrupt leaderboard CSV."
             )
 
-    def test_2_4_nan_precision(self):
+    def test_2_4a_nan_precision(self):
         return self._test_nan_metric("precision.py", "precision")
 
-    def test_2_4_nan_recall(self):
+    def test_2_4b_nan_recall(self):
         return self._test_nan_metric("recall.py", "recall")
 
-    def test_2_4_nan_mota(self):
+    def test_2_4c_nan_mota(self):
         return self._test_nan_metric("mota.py", "mota")
 
-    def test_2_4_nan_motp(self):
+    def test_2_4d_nan_motp(self):
         return self._test_nan_metric("motp.py", "motp")
 
-    def test_2_4_nan_idf1(self):
+    def test_2_4e_nan_idf1(self):
         return self._test_nan_metric("idf1.py", "idf1")
 
     def test_2_5_reports_nameerror(self):
@@ -552,11 +552,11 @@ class MOT17TestRunner:
         self.run_test("2.1 f1_score ZeroDivisionError guard", self.test_2_1_f1_zero)
         self.run_test("2.2 f1_score NaN guard", self.test_2_2_f1_nan)
         self.run_test("2.3 f1_score normal computation", self.test_2_3_f1_normal)
-        self.run_test("2.4 NaN propagation (precision)", self.test_2_4_nan_precision)
-        self.run_test("2.4 NaN propagation (recall)", self.test_2_4_nan_recall)
-        self.run_test("2.4 NaN propagation (mota)", self.test_2_4_nan_mota)
-        self.run_test("2.4 NaN propagation (motp)", self.test_2_4_nan_motp)
-        self.run_test("2.4 NaN propagation (idf1)", self.test_2_4_nan_idf1)
+        self.run_test("2.4a NaN propagation (precision)", self.test_2_4a_nan_precision)
+        self.run_test("2.4b NaN propagation (recall)", self.test_2_4b_nan_recall)
+        self.run_test("2.4c NaN propagation (mota)", self.test_2_4c_nan_mota)
+        self.run_test("2.4d NaN propagation (motp)", self.test_2_4d_nan_motp)
+        self.run_test("2.4e NaN propagation (idf1)", self.test_2_4e_nan_idf1)
         self.run_test("2.5 generate_reports NameError", self.test_2_5_reports_nameerror)
         self.run_test("2.6 generate_reports None guard", self.test_2_6_reports_none_guard)
         self.run_test("2.7 rank_1 IndexError guard", self.test_2_7_rank_indexerror)
