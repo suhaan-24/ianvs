@@ -109,10 +109,9 @@ class MOT17TestRunner:
                 try:
                     with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                         for lineno, line in enumerate(f, 1):
-                            for pat in stale_patterns:
-                                if pat in line:
-                                    rel = os.path.relpath(fpath, self.repo_root)
-                                    failures.append(f"{rel}:{lineno}: {line.rstrip()}")
+                            if any(pat in line for pat in stale_patterns):
+                                rel = os.path.relpath(fpath, self.repo_root)
+                                failures.append(f"{rel}:{lineno}: {line.rstrip()}")
                 except Exception:
                     pass
         if failures:
@@ -332,7 +331,7 @@ class MOT17TestRunner:
         summary = pd.DataFrame(
             {metric_key: [nan]}, index=["OVERALL"]
         )
-        result = round(float(summary.iloc[-1][[metric_key]]), 4)
+        result = round(float(summary.iloc[-1][metric_key]), 4)
         return math.isnan(result)
 
     def _test_nan_metric(self, script_name, metric_key):
