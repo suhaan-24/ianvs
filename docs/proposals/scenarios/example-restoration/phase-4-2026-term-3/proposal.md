@@ -286,22 +286,130 @@ but the justification would need restating against the current repository layout
 
 ![Validator extension](images/validator-extension.png)
 
-Phase IV adds four checks to the framework Phase 3 delivered:
+Phase IV adds four checks to the framework Phase 3 delivered. The rest of this section specifies how
+they integrate with the existing workflow, because placement — not the rule text — is the part that
+determines whether a check is useful.
 
-| Check | Rule | Level |
+| Check | Rule | Stage | Level |
+|---|---|---|---|
+| `testenv_keys` | No `examples/**/testenv*.yaml` introduces `train_url:` or `test_url:` | **Static** | `ERROR` |
+| `sedna_present` | The vendored wheel exists in `resources/third_party/` | **Static** | `ERROR` |
+| `sedna_version` | The installed Sedna version matches what `core/` targets | **Dynamic** | `ERROR` |
+| `sedna_api` | Core call sites resolve against the installed Sedna | **Dynamic** | `ERROR` |
+
+### Why the static/dynamic split falls where it does
+
+`validation_runner.run_validation_pipeline()` treats the two families differently, and the difference
+decides the design:
+
+```python
+dynamic_examples = selected_examples
+if not runs_static_validation(args):
+    dynamic_examples = active_examples(selected_examples)
+    ...
+if runs_static_validation(args):
+    reports.append(validate_static_examples(repo_root, examples=selected_examples))
+```
+
+**Static checks receive `selected_examples` — every selected unit, unfiltered by inventory status.
+Dynamic checks receive `active_examples(...)` only.** With the inventory currently at 1 `active`,
+1 `onGoing` and 46 `unvalidated`, that is the difference between a check that runs on the whole
+repository today and one that runs on a single example.
+
+- `testenv_keys` reads YAML and needs nothing installed. Static. It therefore guards **all 48 units
+  from the day it lands**, which is exactly what a recurrence guard has to do — the configuration it
+  must reject will be written against an example nobody has validated yet.
+- `sedna_present` is a filesystem existence check. Static, same reasoning.
+- `sedna_version` requires the package to be installed before it can be interrogated, so it can only
+  run after `--pip-install` / `--prepare-env`. Dynamic.
+- `sedna_api` must import Sedna and resolve `core/` call sites against it. Dynamic.
+
+This mirrors the placement rule the framework already applies to dataset and JSONL validation, which
+looks static — it only reads files and parses JSON — but is classified dynamic because
+`validate_jsonl_examples()` calls `_prepare_dataset()` first and therefore *executes* the example's
+declared preparation script. The test is not "does this check execute code," it is "does this check
+require a prepared environment."
+
+### Where each check lands in the codebase
+
+| Check | Module | Function it joins |
 |---|---|---|
-| `sedna_present` | The vendored wheel exists in `resources/third_party/`. | `ERROR` |
-| `sedna_version` | The installed Sedna version matches what `core/` is written against. | `ERROR` |
-| `sedna_api` | Core call sites resolve against the installed Sedna. | `ERROR` |
-| `testenv_keys` | No `examples/**/testenv*.yaml` introduces `train_url:` or `test_url:`. | `ERROR` |
+| `testenv_keys` | `static_validator.py` | The existing per-file YAML scan, alongside the hardcoded-path and local-model-path rules |
+| `sedna_present` | `static_validator.py` | Same pass; emits one repository-level check per selected example |
+| `sedna_version` | `dependency_validator.py` | After the install mode resolves, beside the import-coverage check |
+| `sedna_api` | `dependency_validator.py` | Same stage, after `sedna_version` passes |
 
-The first three make the drift observable in CI rather than only in a contributor's traceback. The
-fourth is the recurrence guard, and relates to open issue
-[#743](https://github.com/kubeedge/ianvs/issues/743).
+No new top-level CLI stage is required. `testenv_keys` and `sedna_present` ride the existing
+`--static` flag; `sedna_version` and `sedna_api` ride `--dependency`. That keeps
+`runs_static_validation()` / `runs_dynamic_validation()` unchanged, and means no workflow YAML has to
+learn a new flag.
 
-These land in `.github/workflows/validator/`, which is Phase 3's territory. **Ownership is a question
-for the mentors before implementation begins**, and Phase IV is prepared to deliver them either as
-merged code or as a written specification handed to the framework's maintainer.
+### Where each check runs in the workflows
+
+| Check | Workflow | Jobs |
+|---|---|---|
+| `testenv_keys`, `sedna_present` | `static_code_requirement_cicd.yaml` | `static-code-requirement-base` and `static-code-requirement-pr` |
+| `sedna_version`, `sedna_api` | `dynamic_code_cicd.yaml` | `dynamic-code-requirement-base` and `dynamic-code-requirement-pr`, plus `tier3-example-validation` on the scheduled sweep |
+
+Because both workflows already run base and head independently and hand both result sets to
+`regression_detector.py`, the new checks inherit regression classification for free. A pull request
+that introduces `train_url:` into a new `testenv.yaml` produces a finding present at head and absent
+at base, which `regression_detector` classifies as `CLASS_PR_REGRESSION` — the only class that fails
+the build. A pull request that merely *touches* a file already carrying the legacy keys produces the
+same finding on both sides and is classified `CLASS_PRE_EXISTING`, which does not block. That is the
+correct behaviour for a guard introduced against 19 pre-existing violations, and it is the reason
+this proposal adds a guard rather than a repository-wide lint.
+
+### Result contract
+
+Each check emits the same `CheckResult` shape the existing validators produce — `name`, `status`,
+`message`, and the optional `file` and `line` fields the static reporter already renders. Nothing in
+`report_generator.py` needs to change to display them, and the JSON artifact schema is unchanged, so
+the checks are compatible with the result-schema versioning proposed in
+[#927](https://github.com/kubeedge/ianvs/pull/927).
+
+### Inventory implications
+
+`sedna_version` needs to know what version `core/` targets. Rather than hardcoding it in the
+validator, Phase IV records it once at the repository level and reads it from there, so that
+bumping the vendored wheel is a single-file change and the check cannot drift from the code it
+guards. No per-example inventory field is required for any of the four checks — deliberately, since
+47 of 48 inventory entries are currently skeletons and a design that required new per-example
+metadata would be blocked behind that backlog.
+
+### Known dependency on open validator issues
+
+Two of the four checks depend on result semantics that are currently unreliable, and this proposal
+states that rather than assuming it away.
+
+**`sedna_version` and `sedna_api` are dynamic, so for any `unvalidated` example they will emit
+`SKIP`.** Under the current aggregation in `report_generator.py` —
+`passed=not any(check.status in BLOCKING_STATUSES for check in checks)` — `SKIP` is not blocking, so
+an example whose only result is a skipped eligibility check serializes as `"passed": true`. Until
+[#836](https://github.com/kubeedge/ianvs/issues/836) is resolved, a skipped `sedna_api` check would
+be indistinguishable in the JSON artifact from one that ran and passed.
+
+This does not block Phase IV, for two reasons. The two checks that carry the recurrence guarantee —
+`testenv_keys` and `sedna_present` — are static and therefore run on all 48 units regardless of
+inventory status, so the guard is unaffected. And the two dynamic checks are diagnostic rather than
+gating: their value is naming the contract mismatch for a maintainer, and on the one `active`
+example they execute normally today.
+
+Phase IV therefore sequences its own delivery behind the framework's result semantics: the static
+pair can land immediately; the dynamic pair should land after #836, or alongside it.
+
+### Ownership
+
+These land in `.github/workflows/validator/`, which is Phase 3's territory, and there are currently
+four open pull requests touching the same directory
+([#927](https://github.com/kubeedge/ianvs/pull/927),
+[#997](https://github.com/kubeedge/ianvs/pull/997),
+[#1003](https://github.com/kubeedge/ianvs/pull/1003),
+[#1004](https://github.com/kubeedge/ianvs/pull/1004)). **Ownership and ordering are a question for
+the maintainers before implementation begins.** Phase IV is prepared to deliver these either as
+merged code or as a written specification with a reference implementation handed to the framework's
+maintainer, and will rebase behind whichever of the open pull requests land first rather than
+competing with them.
 
 ---
 
@@ -473,10 +581,10 @@ from `unvalidated` to a validated status backed by evidence.
 | FR-4 | The initial-training branch MUST be reachable on the first training call. |
 | FR-5 | The paradigm MUST call only interfaces the installed Sedna exposes. |
 | FR-6 | The covered example MUST run from a clean clone to a ranked leaderboard with documented prerequisites. |
-| FR-7 | CI MUST fail when the vendored Sedna wheel is absent. |
-| FR-8 | CI MUST fail when the installed Sedna version does not match what Core is written against. |
-| FR-9 | CI MUST fail when a Core call site cannot resolve against the installed Sedna. |
-| FR-10 | CI MUST reject any `examples/**/testenv*.yaml` introducing `train_url:` or `test_url:`. |
+| FR-7 | CI MUST fail when the vendored Sedna wheel is absent. *(static; all selected units)* |
+| FR-8 | CI MUST fail when the installed Sedna version does not match what Core is written against. *(dynamic; `active` units)* |
+| FR-9 | CI MUST fail when a Core call site cannot resolve against the installed Sedna. *(dynamic; `active` units)* |
+| FR-10 | CI MUST reject any `examples/**/testenv*.yaml` introducing `train_url:` or `test_url:`. *(static; all selected units)* |
 | FR-11 | Defects that can only be worked around MUST be recorded as workarounds with an upstream issue reference, and MUST NOT be reported as fixed. |
 
 ---
@@ -520,7 +628,9 @@ Dates are indicative and will be aligned to the official LFX Term 3 calendar at 
 
 ### Late phase — weeks 9–12
 
-- Land S6: the four validator checks and the recurrence guard.
+- Land S6 in two parts: the static pair (`testenv_keys`, `sedna_present`) first, since they run on
+  all selected units regardless of inventory status; then the dynamic pair (`sedna_version`,
+  `sedna_api`), sequenced after or alongside #836 so a skipped check is not reported as a pass.
 - Move the covered inventory unit out of `unvalidated`.
 - Document the residue: what was repaired, what was worked around, what went upstream.
 - Record follow-up issues for the lifelong-learning units Phase IV did not cover.
@@ -542,7 +652,11 @@ Phase IV is successful if:
    ranked leaderboard, with every prerequisite documented.
 8. Each stage-5 change is independently revertible, and reverting one returns the run to its prior
    failure rather than a new one.
-9. The four validator checks are implemented and passing, per FR-7 to FR-10.
+9. The four validator checks are implemented and passing, per FR-7 to FR-10, each in the stage named
+   in *Relationship to the Phase 3 CI framework*.
+9a. A pull request introducing `train_url:` into a new configuration is classified
+    `CLASS_PR_REGRESSION` and blocks; a pull request touching a file that already carries the legacy
+    keys is classified `CLASS_PRE_EXISTING` and does not block.
 10. A new configuration introducing `train_url:` is rejected by CI.
 11. The covered inventory unit no longer reads `unvalidated`.
 12. The `DATA_PATH_PREFIX` defect is recorded as a workaround with an upstream Sedna issue, and is
