@@ -110,13 +110,13 @@ def test_unresolvable_symbols_fail_and_are_listed(tmp_path):
 
     results = _by_name(sc.check_sedna_contract(
         repo, python=sys.executable,
-        extra_symbols=[("sedna.core.lifelong_learning", "LifelongLearning.my_inference")]))
+        extra_symbols=[("sedna.core.lifelong_learning", "LifelongLearning.no_such_method")]))
 
     check = results["Sedna symbols used by core resolve"]
     assert check.status == "FAIL"
     assert len(check.details) == 3
     assert any("NoSuchClass" in detail for detail in check.details)
-    assert any("my_inference" in detail for detail in check.details)
+    assert any("no_such_method" in detail for detail in check.details)
 
 
 def test_probe_that_cannot_run_is_an_error(tmp_path):

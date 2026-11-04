@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 from sedna.common.class_factory import ClassFactory, ClassType
+from sedna.core.lifelong_learning import LifelongLearning
 from sedna.datasources import BaseDataSource
 
 from core.testcasecontroller.algorithm.paradigm.sedna_lifelong_learning import (
@@ -27,6 +28,11 @@ from core.testcasecontroller.algorithm.paradigm.sedna_lifelong_learning import (
 )
 
 _COUNTER = itertools.count()
+
+# inference_lifelong() ships in the Ianvs subclass and, from sedna-0.6.0.3, in
+# the patched wheel itself. Both placements must behave the same.
+_PLACEMENTS = [IanvsLifelongLearning] + (
+    [LifelongLearning] if "inference_lifelong" in vars(LifelongLearning) else [])
 
 
 class _SeenEstimator:
@@ -68,12 +74,12 @@ def _needs_scores(self, samples, scores, **kwargs):
     raise AssertionError("must not be called")
 
 
-@pytest.fixture(name="job")
-def fixture_job(tmp_path, monkeypatch):
+@pytest.fixture(name="job", params=_PLACEMENTS, ids=lambda cls: cls.__name__)
+def fixture_job(request, tmp_path, monkeypatch):
     index = tmp_path / "index.pkl"
     index.write_bytes(b"")
     monkeypatch.setenv("MODEL_URLS", str(index))
-    job = IanvsLifelongLearning.__new__(IanvsLifelongLearning)
+    job = request.param.__new__(request.param)
     job.cloud_knowledge_management = SimpleNamespace(
         seen_estimator=_SeenEstimator(), task_index=str(tmp_path / "cloud" / "index.pkl"))
     job.unseen_sample_recognition_param = {}
