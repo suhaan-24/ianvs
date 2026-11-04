@@ -1,0 +1,325 @@
+diff -ruN a/sedna/algorithms/seen_task_learning/__init__.py b/sedna/algorithms/seen_task_learning/__init__.py
+--- a/sedna/algorithms/seen_task_learning/__init__.py
++++ b/sedna/algorithms/seen_task_learning/__init__.py
+@@ -23,4 +23,7 @@
+ # result integrate
+ from . import inference_integration
+ 
++# update decision
++from . import task_update_decision
++
+ from .seen_task_learning import SeenTaskLearning
+diff -ruN a/sedna/algorithms/seen_task_learning/seen_task_learning.py b/sedna/algorithms/seen_task_learning/seen_task_learning.py
+--- a/sedna/algorithms/seen_task_learning/seen_task_learning.py
++++ b/sedna/algorithms/seen_task_learning/seen_task_learning.py
+@@ -157,6 +157,8 @@
+         """
+         Task attribute extractor and multi-task definition
+         """
++        if not isinstance(self.task_definition, dict):
++            return self.task_definition(samples, **kwargs)
+         method_name = self.task_definition.get(
+             "method", "TaskDefinitionByDataAttr"
+         )
+@@ -183,6 +185,11 @@
+         """
+         Mining tasks of inference sample base on task attribute extractor
+         """
++        if not isinstance(self.seen_task_allocation, dict):
++            alloc = self.seen_task_allocation
++            if not hasattr(alloc, 'task_extractor') or alloc.task_extractor is None:
++                alloc.task_extractor = self.seen_extractor
++            return alloc(task_extractor=self.seen_extractor, samples=samples)
+         method_name = self.seen_task_allocation.get("method")
+         extend_param = self._parse_param(
+             self.seen_task_allocation.get("param")
+@@ -191,11 +198,13 @@
+         if not method_name:
+             task_definition = self.task_definition.get(
+                 "method", "TaskDefinitionByDataAttr"
+-            )
++            ) if isinstance(self.task_definition, dict) else \
++                self.task_definition.__class__.__name__
+             method_name = self._method_pair.get(task_definition,
+                                                 'TaskAllocationByDataAttr')
+             extend_param = self._parse_param(
+-                self.task_definition.get("param"))
++                self.task_definition.get("param")
++                if isinstance(self.task_definition, dict) else {})
+ 
+         method_cls = ClassFactory.get_cls(ClassType.STP, method_name)(
+             task_extractor=self.seen_extractor, **extend_param
+@@ -418,7 +427,12 @@
+             self.seen_extractor = FileOps.load(self.seen_extractor)
+         self.seen_task_groups = \
+             task_index[self.seen_task_key][self.task_group_key]
+-        self.seen_models = [task.model for task in self.seen_task_groups]
++        if not self.seen_task_groups:
++            LOGGER.warning("seen_task_groups is empty after loading task index")
++        self.seen_models = [
++            task.model for task in self.seen_task_groups
++            if task is not None and hasattr(task, 'model') and task.model
++        ]
+ 
+     def predict(self, data: BaseDataSource,
+                 post_process=None, **kwargs):
+diff -ruN a/sedna/algorithms/seen_task_learning/task_remodeling/task_remodeling.py b/sedna/algorithms/seen_task_learning/task_remodeling/task_remodeling.py
+--- a/sedna/algorithms/seen_task_learning/task_remodeling/task_remodeling.py
++++ b/sedna/algorithms/seen_task_learning/task_remodeling/task_remodeling.py
+@@ -75,6 +75,6 @@
+                 model = self.models[m]
+             except Exception as err:
+                 print(f"self.models[{m}] not exists. {err}")
+-                model = self.models[0]
++                model = self.models[0] if self.models else None
+             models.append(model)
+         return data, models
+diff -ruN a/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py b/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py
+--- a/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py
++++ b/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py
+@@ -20,7 +20,37 @@
+ from ..artifact import Task
+ from .base_task_update_decision import BaseTaskUpdateDecision
+ 
+-__all__ = ('UpdateStrategyDefault', )
++__all__ = ('UpdateStrategyDefault', 'UpdateStrategyByFinetune')
++
++
++@ClassFactory.register(ClassType.KM, alias="UpdateStrategyDefault")
++class UpdateStrategyDefault(BaseTaskUpdateDecision):
++    """Default update strategy: retrain all existing task models on new samples."""
++
++    def __init__(self, task_index, **kwargs):
++        super(UpdateStrategyDefault, self).__init__(task_index)
++
++    def __call__(self, samples, task_type="seen_task") -> Tuple[List[Task], Dict]:
++        if task_type == self.seen_task_key:
++            task_index = self.task_index.get(self.seen_task_key, {})
++        else:
++            task_index = self.task_index.get(self.unseen_task_key, {})
++
++        task_groups = task_index.get(self.task_group_key, [])
++        tasks = []
++        task_update_strategies = {}
++        for task_group in task_groups:
++            if task_group is None or not task_group.tasks:
++                continue
++            task = task_group.tasks[0]
++            task.samples = samples
++            tasks.append(task)
++            task_update_strategies[task.entry] = {
++                "raw_data_update": samples,
++                "target_model_update": True,
++                "task_attr_update": None,
++            }
++        return tasks, task_update_strategies
+ 
+ 
+ @ClassFactory.register(ClassType.KM)
+diff -ruN a/sedna/common/constant.py b/sedna/common/constant.py
+--- a/sedna/common/constant.py
++++ b/sedna/common/constant.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import os
+ from enum import Enum
+ 
+ 
+@@ -52,4 +53,4 @@
+     UNSEEN_TASK = "unseen_task"
+     TASK_GROUPS = "task_groups"
+     EXTRACTOR = "extractor"
+-    EDGE_KB_DIR = "/var/lib/sedna/kb"
++    EDGE_KB_DIR = os.path.expanduser("~/.sedna/kb")
+diff -ruN a/sedna/core/base.py b/sedna/core/base.py
+--- a/sedna/core/base.py
++++ b/sedna/core/base.py
+@@ -178,4 +178,4 @@
+         try:
+             LCClient.send(self.lc_server, self.worker_name, message)
+         except Exception as err:
+-            self.log.error(err)
++            self.log.debug(f"LC server not reachable (local mode): {err}")
+diff -ruN a/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py b/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py
+--- a/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py
++++ b/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py
+@@ -185,9 +185,15 @@
+             scores = detail.scores
+             entry = detail.entry
+             self.log.info(f"{entry} scores: {scores}")
++            flat_scores = []
++            for v in scores.values():
++                if isinstance(v, dict):
++                    flat_scores.extend(v.values())
++                else:
++                    flat_scores.append(v)
+             if any(map(lambda x: operator_func(float(x),
+                                                self.model_threshold),
+-                       scores.values())):
++                       flat_scores)):
+                 self.log.warn(
+                     f"{entry} will not be deploy because all "
+                     f"scores {self.model_filter_operator} "
+diff -ruN a/sedna/core/lifelong_learning/lifelong_learning.py b/sedna/core/lifelong_learning/lifelong_learning.py
+--- a/sedna/core/lifelong_learning/lifelong_learning.py
++++ b/sedna/core/lifelong_learning/lifelong_learning.py
+@@ -279,7 +279,7 @@
+             None, K8sResourceKindStatus.COMPLETED.value, task_info_res)
+         self.log.info(f"Lifelong learning Train task Finished, "
+                       f"KB index save in {task_index}")
+-        return callback_func(self.estimator, res) if callback_func else res
++        return callback_func(self.estimator, task_index) if callback_func else task_index
+ 
+     def update(self, train_data, valid_data=None, post_process=None, **kwargs):
+         """
+@@ -309,8 +309,9 @@
+ 
+         task_index_url = Context.get_parameters(
+             "CLOUD_KB_INDEX", self.cloud_knowledge_management.task_index)
+-        task_index_url = FileOps.join_path(
+-            BaseConfig.data_path_prefix, task_index_url)
++        if not os.path.isabs(task_index_url):
++            task_index_url = FileOps.join_path(
++                BaseConfig.data_path_prefix, task_index_url)
+         index_url = self.cloud_knowledge_management.local_task_index_url
+         FileOps.download(task_index_url, index_url)
+         self.log.info(
+@@ -411,6 +412,59 @@
+             kind="eval")
+         return callback_func(res) if callback_func else res
+ 
++    def inference_2(self, data=None, post_process=None, **kwargs):
++        """Simplified inference using cloud KB for local/standalone testing."""
++        task_index_url = Context.get_parameters(
++            "MODEL_URLS", self.cloud_knowledge_management.task_index)
++        index_url = self.cloud_knowledge_management.local_task_index_url
++        if not os.path.exists(index_url):
++            FileOps.download(task_index_url, index_url)
++        callback_func = None
++        if callable(post_process):
++            callback_func = post_process
++        elif post_process is not None:
++            callback_func = ClassFactory.get_cls(ClassType.CALLBACK, post_process)
++
++        # Detect unseen samples using the configured recognition method
++        try:
++            method_name = (
++                self.unseen_sample_recognition.get("method", "SampleRegonitionDefault")
++                if isinstance(self.unseen_sample_recognition, dict)
++                else "SampleRegonitionDefault"
++            )
++            recognizer = ClassFactory.get_cls(ClassType.UTD, method_name)(index_url)
++            _, unseen_samples = recognizer(data)
++            is_unseen_task = len(unseen_samples.x) > 0
++        except Exception as e:
++            self.log.warning(f"Unseen sample detection failed: {e}")
++            is_unseen_task = False
++
++        res, tasks = self.cloud_knowledge_management.seen_estimator.predict(
++            data=data, task_index=index_url, task_type="seen_task", **kwargs)
++        return (callback_func(res) if callback_func else res), is_unseen_task, tasks
++
++    def my_evaluate(self, data, post_process=None, **kwargs):
++        """Evaluate models and return (index_url, tasks_detail, res)."""
++        task_index_url = Context.get_parameters(
++            "MODEL_URLS", self.cloud_knowledge_management.task_index)
++        index_url = self.cloud_knowledge_management.local_task_index_url
++        if not os.path.exists(index_url):
++            FileOps.download(task_index_url, index_url)
++        res, tasks_detail = self.cloud_knowledge_management.seen_estimator.evaluate(
++            data=data, task_index=index_url, **kwargs)
++        return index_url, tasks_detail, res
++
++    def my_inference(self, data=None, **kwargs):
++        """Run inference for final evaluation in standalone/local mode."""
++        task_index_url = Context.get_parameters(
++            "MODEL_URLS", self.cloud_knowledge_management.task_index)
++        index_url = self.cloud_knowledge_management.local_task_index_url
++        if not os.path.exists(index_url):
++            FileOps.download(task_index_url, index_url)
++        res, _ = self.cloud_knowledge_management.seen_estimator.predict(
++            data=data, task_index=index_url, task_type="seen_task", **kwargs)
++        return res
++
+     def inference(self,
+                   data=None,
+                   post_process=None,
+@@ -536,7 +590,7 @@
+         index_file = self.kb_server.update_task_status(drop_task, new_status=0)
+ 
+         if not index_file:
+-            self.log.error(f"KB update Fail !")
++            self.log.debug("KB server not available in local mode, using local index.")
+             index_file = str(
+                 self.cloud_knowledge_management.local_task_index_url)
+         else:
+diff -ruN a/sedna/datasources/__init__.py b/sedna/datasources/__init__.py
+--- a/sedna/datasources/__init__.py
++++ b/sedna/datasources/__init__.py
+@@ -106,8 +106,8 @@
+                             y_data.append(tup[1])
+                         else:
+                             y_data.append(0)
+-        self.x = np.array(x_data)
+-        self.y = np.array(y_data)
++        self.x = np.array(x_data, dtype=object)
++        self.y = np.array(y_data, dtype=object)
+ 
+ 
+ class CSVDataParse(BaseDataSource, ABC):
+@@ -240,8 +240,8 @@
+                     line = json.loads(line)
+                     x_data.append(line['question'])
+                     y_data.append(line['answer'])
+-        self.x = np.array(x_data)
+-        self.y = np.array(y_data)
++        self.x = np.array(x_data, dtype=object)
++        self.y = np.array(y_data, dtype=object)
+ 
+ 
+ class JSONMetaDataParse(BaseDataSource, ABC):
+diff -ruN a/sedna/service/client.py b/sedna/service/client.py
+--- a/sedna/service/client.py
++++ b/sedna/service/client.py
+@@ -131,6 +131,8 @@
+     """send info to LC by http"""
+     @classmethod
+     def send(cls, lc_server, worker_name, message: dict):
++        if not lc_server or "127.0.0.1" in str(lc_server):
++            return None
+         url = '{0}/sedna/workers/{1}/info'.format(
+             lc_server, worker_name
+         )
+@@ -249,9 +251,11 @@
+     """Communicate with Knowledge Base server"""
+ 
+     def __init__(self, kbserver):
+-        self.kbserver = f"{kbserver}/knowledgebase"
++        self.kbserver = f"{kbserver}/knowledgebase" if kbserver else None
+ 
+     def upload_file(self, files, name=""):
++        if not self.kbserver:
++            return files
+         if not (files and os.path.isfile(files)):
+             return files
+         if not name:
+@@ -268,6 +272,8 @@
+         return f"{self.kbserver}/{outurl}"
+ 
+     def update_db(self, task_info_file):
++        if not self.kbserver:
++            return task_info_file
+ 
+         _url = f"{self.kbserver}/update"
+ 
+@@ -287,6 +293,8 @@
+         return outurl
+ 
+     def update_task_status(self, tasks: str, new_status=1):
++        if not self.kbserver:
++            return None
+         data = {
+             "tasks": tasks,
+             "status": int(new_status)

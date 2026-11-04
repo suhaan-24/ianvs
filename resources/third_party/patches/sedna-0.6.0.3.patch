@@ -1,0 +1,196 @@
+diff -ruN a/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py b/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py
+--- a/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py
++++ b/sedna/algorithms/seen_task_learning/task_update_decision/task_update_decision_finetune.py
+@@ -66,7 +66,8 @@
+ 
+     def __init__(self, task_index, **kwargs):
+         super(UpdateStrategyByFinetune, self).__init__(task_index)
+-        self.attribute = kwargs.get("attribute").split(", ")
++        attribute = kwargs.get("attribute")
++        self.attribute = attribute.split(", ") if attribute else None
+         if not self.attribute:
+             self.attribute = ("real", "sim")
+         self.city = kwargs.get("city", "berlin")
+diff -ruN a/sedna/algorithms/unseen_task_detection/unseen_sample_recognition/unseen_sample_recognition.py b/sedna/algorithms/unseen_task_detection/unseen_sample_recognition/unseen_sample_recognition.py
+--- a/sedna/algorithms/unseen_task_detection/unseen_sample_recognition/unseen_sample_recognition.py
++++ b/sedna/algorithms/unseen_task_detection/unseen_sample_recognition/unseen_sample_recognition.py
+@@ -12,6 +12,8 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import os
++import zlib
+ from typing import Tuple
+ 
+ from sedna.datasources import BaseDataSource
+@@ -37,8 +39,8 @@
+         super(SampleRegonitionDefault, self).__init__(task_index)
+ 
+     def __call__(self,
+-                 samples: BaseDataSource) -> Tuple[BaseDataSource,
+-                                                   BaseDataSource]:
++                 samples: BaseDataSource,
++                 **kwargs) -> Tuple[BaseDataSource, BaseDataSource]:
+         '''
+         Parameters
+         ----------
+@@ -49,14 +51,16 @@
+         -------
+         seen_task_samples: BaseDataSource
+         unseen_task_samples: BaseDataSource
++
++        This default is a placeholder that does not look at the knowledge
++        base. A single sample is marked seen or unseen by a stable hash of
++        its file names, so the same sample gets the same answer on every run.
+         '''
+-        import random
+         seen_task_samples = BaseDataSource(data_type=samples.data_type)
+         unseen_task_samples = BaseDataSource(data_type=samples.data_type)
+ 
+         if samples.num_examples() == 1:
+-            random_index = random.randint(0, 1)
+-            if random_index == 0:
++            if zlib.crc32(_sample_key(samples.x[0]).encode()) % 2 == 1:
+                 seen_task_samples.x = []
+                 unseen_task_samples.x = samples.x
+             else:
+@@ -69,3 +73,15 @@
+         unseen_task_samples.x = samples.x[sample_num:]
+ 
+         return seen_task_samples, unseen_task_samples
++
++
++def _sample_key(sample):
++    """File names of a sample, independent of where the dataset lives."""
++    if isinstance(sample, (str, bytes)):
++        parts = [sample]
++    else:
++        try:
++            parts = list(sample)
++        except TypeError:
++            parts = [sample]
++    return "|".join(os.path.basename(str(part)) for part in parts)
+diff -ruN a/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py b/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py
+--- a/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py
++++ b/sedna/core/lifelong_learning/knowledge_management/cloud_knowledge_management.py
+@@ -41,7 +41,11 @@
+             "cloud_output_url", "/tmp")
+         self.task_index = FileOps.join_path(
+             self.cloud_output_url, config["task_index"])
+-        self.local_task_index_url = KBResourceConstant.KB_INDEX_NAME.value
++        # A per-job location, so that a later job never picks up an index
++        # left in the current directory by an earlier one.
++        self.local_task_index_url = os.path.join(
++            tempfile.mkdtemp(prefix="sedna-kb-"),
++            KBResourceConstant.KB_INDEX_NAME.value)
+ 
+     def update_kb(self, task_index):
+         if isinstance(task_index, str):
+diff -ruN a/sedna/core/lifelong_learning/lifelong_learning.py b/sedna/core/lifelong_learning/lifelong_learning.py
+--- a/sedna/core/lifelong_learning/lifelong_learning.py
++++ b/sedna/core/lifelong_learning/lifelong_learning.py
+@@ -12,8 +12,10 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import inspect
+ import numpy as np
+ import os
++import tempfile
+ 
+ from sedna.core.base import JobBase
+ from sedna.common.file_ops import FileOps
+@@ -465,6 +467,80 @@
+             data=data, task_index=index_url, task_type="seen_task", **kwargs)
+         return res
+ 
++    @property
++    def cloud_task_index(self):
++        """Cloud knowledge-base index, as left by train() or evaluate()."""
++        return self.cloud_knowledge_management.task_index
++
++    def inference_lifelong(self, data=None, post_process=None,
++                           detect_unseen=True, **kwargs):
++        """Lifelong-learning inference for standalone runs.
++
++        Unlike inference(), it uses the cloud knowledge-base index and starts
++        no edge inference service.
++
++        Parameters
++        ----------
++        data : BaseDataSource
++            inference samples.
++        post_process : function or str
++            applied to each task model's prediction, as in inference().
++        detect_unseen : bool
++            when False, skip unseen-sample detection and predict every sample
++            with the seen-task models.
++
++        Returns
++        -------
++        (res, is_unseen_task, tasks)
++            the same shape as inference(): is_unseen_task is a bool for one
++            sample and a dict keyed by sample for several.
++        """
++        task_index = self._lifelong_task_index()
++        res, tasks = self.cloud_knowledge_management.seen_estimator.predict(
++            data=data, post_process=post_process, task_index=task_index,
++            task_type="seen_task", **kwargs)
++        if not detect_unseen:
++            return res, False, tasks
++
++        _, unseen_samples = self._recognize_unseen_samples(
++            data, task_index, **kwargs)
++        return res, _unseen_flags(data, unseen_samples), tasks
++
++    def _lifelong_task_index(self):
++        """Path of the cloud index passed in MODEL_URLS."""
++        task_index_url = Context.get_parameters(
++            "MODEL_URLS", self.cloud_knowledge_management.task_index)
++        if os.path.isfile(task_index_url):
++            return task_index_url
++        local_index = os.path.join(
++            tempfile.mkdtemp(prefix="sedna-kb-"),
++            KBResourceConstant.KB_INDEX_NAME.value)
++        FileOps.download(task_index_url, local_index)
++        return local_index
++
++    def _recognize_unseen_samples(self, data, task_index, **kwargs):
++        recognizer = getattr(self, "_unseen_recognizer", None)
++        if recognizer is None:
++            # Built as in _start_inference_service, but from the cloud
++            # knowledge base. Kept apart from recognize_unseen_samples,
++            # which belongs to the edge inference service.
++            recognizer = ClassFactory.get_cls(
++                ClassType.UTD, self.unseen_sample_recognition["method"])(
++                    task_index,
++                    estimator=self.cloud_knowledge_management.seen_estimator
++                    .estimator.base_model,
++                    **self.unseen_sample_recognition_param)
++            self._unseen_recognizer = recognizer
++
++        params = inspect.signature(recognizer.__call__).parameters
++        if "scores" in params:
++            raise NotImplementedError(
++                "unseen-sample recognizers that need seen-task scores are not "
++                "supported by inference_lifelong() yet.")
++        if any(p.kind == p.VAR_KEYWORD for p in params.values()):
++            return recognizer(data, **kwargs)
++        return recognizer(data)
++
+     def inference(self,
+                   data=None,
+                   post_process=None,
+@@ -597,3 +673,12 @@
+             self.log.info(f"Deploy {index_file} to the edge.")
+ 
+         return res, index_file
++
++
++def _unseen_flags(data, unseen_samples):
++    """is_unseen_task in the form LifelongLearning.inference() returns it."""
++    unseen_x = unseen_samples.x if unseen_samples.x is not None else []
++    if data.num_examples() == 1:
++        return len(unseen_x) > 0
++    unseen_names = {x[0] for x in unseen_x}
++    return {x[0]: x[0] in unseen_names for x in data.x}
