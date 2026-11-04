@@ -38,7 +38,7 @@ sudo apt-get install libgl1-mesa-glx -y
 python -m pip install --upgrade pip
 
 cd ianvs 
-python -m pip install ./resources/third_party/*
+python -m pip install ./resources/third_party/sedna-0.6.0.3-py3-none-any.whl
 python -m pip install -r requirements.txt
 ```
 
@@ -68,10 +68,15 @@ we have done that for you and the interested readers can refer to [testenv.yaml]
 
 Related algorithm is also ready in this quick start. `testalgorithms/rfnet/basemodel.py` puts
 `RFNet` and its parent directory on the Python path itself, so no `PYTHONPATH` export is needed.
-Install its dependencies with:
+Install its dependencies, and the patched Sedna wheel this example needs, with:
 ``` shell
-pip install -r examples/cityscapes-synthia/lifelong_learning_bench/curb-detection/requirements.txt
+sh examples/cityscapes-synthia/lifelong_learning_bench/curb-detection/scripts/01_install_requirements.sh \
+    examples/cityscapes-synthia/lifelong_learning_bench/curb-detection/requirements.txt
 ```
+
+This example runs on `sedna-0.6.0.3`, a patched copy of Sedna 0.6 that fixes the Sedna problems
+lifelong learning hits when Ianvs runs it standalone. See
+[resources/third_party/README.md](../../../../resources/third_party/README.md) for the changes.
 
 For a quick check without the full 2 GB dataset, generate a small synthetic dataset and point
 `testenv.yaml` at `./dataset/curb-detection-smoke/{train,test}_data/index.txt`:

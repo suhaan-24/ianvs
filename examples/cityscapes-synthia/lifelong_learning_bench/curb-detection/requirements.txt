@@ -1,5 +1,5 @@
-# RFNet and its training utilities. Ianvs and the vendored Sedna wheel are
-# installed separately (see the Ianvs installation guide).
+# RFNet and its training utilities. Ianvs is installed separately; the patched
+# Sedna wheel is installed by scripts/01_install_requirements.sh.
 torch>=1.10
 torchvision>=0.11
 tensorboard
